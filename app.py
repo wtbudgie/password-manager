@@ -1,20 +1,16 @@
-import os
-import tkinter as tk
+import os, sqlite3, secrets, keyring, base64
+
+from tkinter import Tk, Listbox, END, CENTER, Label, Entry, Button
 from tkinter import simpledialog
-import sqlite3
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-import hashlib
+from passlib.hash import pbkdf2_sha256
 
-import base64
-
-loggedIn = False
-masterPwd = ""
+serviceId = "QuickLanePasswordManager"
 
 def hashPassword(password, salt):
-    iterations = 100000
-    hashedPassword = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, iterations)
+    hashedPassword = pbkdf2_sha256.hash(password, salt=salt, rounds=480000)
     return hashedPassword
 
 def derive_key(masterPassword: str, salt: bytes):
@@ -27,15 +23,16 @@ def derive_key(masterPassword: str, salt: bytes):
     key = base64.urlsafe_b64encode(kdf.derive(masterPassword.encode()))
     return key
 
-def encryptPassword(masterPassword: str, password: str):
-    salt = os.urandom(16)
-    key = derive_key(masterPassword, salt)
+def encryptPassword(password: str):
+    salt = secrets.token_bytes(16)
+    key = derive_key(keyring.get_password(serviceId, 'MasterPassword'), salt)
     fernet = Fernet(key)
     encryptedPassword = fernet.encrypt(password.encode())
     return key, salt, encryptedPassword
 
-def decryptPassword(masterPassword: str, salt: bytes, encryptedPassword: bytes):
-    key = derive_key(masterPassword, salt)
+def decryptPassword(salt: bytes, encryptedPassword: bytes):
+    print(keyring.get_password(serviceId, 'MasterPassword'))
+    key = derive_key(keyring.get_password(serviceId, 'MasterPassword'), salt)
     f = Fernet(key)
     decryptedPassword = f.decrypt(encryptedPassword).decode()
     return decryptedPassword
@@ -60,7 +57,9 @@ def createDatabaseTable():
         masterPassword = simpledialog.askstring("Authentication", "Enter your master password:", show='*')
         if checkMasterPassword(conn, masterPassword):
             loggedIn=True
-            masterPwd = masterPassword
+            keyring.set_password(serviceId, 'MasterPassword', masterPassword)
+            print(keyring.get_password(serviceId, 'MasterPassword'))
+            
         else:
             quit()
 
@@ -77,7 +76,7 @@ def createDatabaseTable():
     return conn
 
 def storePassword(conn, name: str, email: str, password: str):
-    key, salt, encryptedPassword = encryptPassword(masterPwd, password)
+    key, salt, encryptedPassword = encryptPassword(password)
     conn.execute("INSERT INTO passwords (name, email, salt, password) VALUES (?, ?, ?, ?)", (name, email, salt, encryptedPassword))
     conn.commit()
 
@@ -90,7 +89,7 @@ def getPasswordByID(conn, password_id):
     result = cursor.fetchone()
     if result:
         encrypted_password, salt = result
-        decrypted_password = decryptPassword(masterPwd, salt, encrypted_password)
+        decrypted_password = decryptPassword(salt, encrypted_password)
         return decrypted_password
     else:
         return "Password not found"
@@ -109,9 +108,8 @@ def checkMasterPassword(conn, enteredPassword):
     return False
 
 def createGui():
-    root = tk.Tk()
+    root = Tk()
     root.title("QuickLane Password Manager")
-    conn = createDatabaseTable()
 
     windowWidth = 800
     windowHeight = 400
@@ -121,7 +119,7 @@ def createGui():
     y = (screenHeight - windowHeight) // 2
     root.geometry(f"{windowWidth}x{windowHeight}+{x}+{y}")
 
-    listBox = tk.Listbox(root, width=40)
+    listBox = Listbox(root, width=40)
     listBox.pack()
 
     def showPassword(event):
@@ -136,14 +134,17 @@ def createGui():
     listBox.bind("<Double-Button-1>", showPassword)
 
     def updateListbox():
-        listBox.delete(0, tk.END)
+        listBox.delete(0, END)
         passwords = getPasswords(conn)
         for password in passwords:
             passwordId = password[0]
             name = password[1]
             email = password[2]
-            listBox.insert(tk.END, f"{passwordId} | {name} - {email}")
-            listBox.config(justify=tk.CENTER)
+            listBox.insert(END, f"{passwordId} | {name} - {email}")
+            listBox.config(justify=CENTER)
+
+    sidebarLabel = Label(root, text="Password: ")
+    sidebarLabel.pack()
 
     def addPassword():
         name = nameEntry.get()
@@ -151,33 +152,31 @@ def createGui():
         password = passwordEntry.get()
         storePassword(conn, name, email, password)
         updateListbox()
-        nameEntry.delete(0, tk.END)
-        emailEntry.delete(0, tk.END)
-        passwordEntry.delete(0, tk.END)
+        nameEntry.delete(0, END)
+        emailEntry.delete(0, END)
+        passwordEntry.delete(0, END)
 
-    nameLabel = tk.Label(root, text="Name:")
+    nameLabel = Label(root, text="Name:")
     nameLabel.pack()
-    nameEntry = tk.Entry(root)
+    nameEntry = Entry(root)
     nameEntry.pack()
 
-    emailLabel = tk.Label(root, text="Email:")
+    emailLabel = Label(root, text="Email:")
     emailLabel.pack()
-    emailEntry = tk.Entry(root)
+    emailEntry = Entry(root)
     emailEntry.pack()
 
-    passwordLabel = tk.Label(root, text="Password:")
+    passwordLabel = Label(root, text="Password:")
     passwordLabel.pack()
-    passwordEntry = tk.Entry(root)
+    passwordEntry = Entry(root)
     passwordEntry.pack()
 
-    addButton = tk.Button(root, text="Add Password", command=addPassword)
+    addButton = Button(root, text="Add Password", command=addPassword)
     addButton.pack()
-
-    sidebarLabel = tk.Label(root, text="Password: ")
-    sidebarLabel.pack()
 
     updateListbox()
     root.mainloop()
 
 if __name__ == "__main__":
+    conn = createDatabaseTable()
     createGui()
